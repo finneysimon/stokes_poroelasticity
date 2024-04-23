@@ -1,8 +1,6 @@
 """
 This is a monolithic solver for pressure-driven flow around a
-neo-Hookean particle.  The particle is **free** to move with
-the flow.  However, equations are formulated in a moving
-frame that travels with the particle
+poroelastic particle.
 
 The problem is formulated using the ALE
 method, which maps the deformed geometry to the initial
@@ -11,9 +9,8 @@ initial geometry; the deformed geometry can by using the
 WarpByVector filter in Paraview using the displacement
 computed in the fluid domain.
 
-The problem uses Lagrange multipliers to ensure the centre of
-mass of the particle remains fixed as well as to impose
-continuity of stress
+The problem uses Lagrange multipliers to ensure zero mean fluid
+pressure and zero net z-displacement
 
 The code works by initially solving the problem with a small
 value of epsilon (ratio of fluid stress to elastic stiffness)
@@ -21,8 +18,7 @@ and then gradually ramping up epsilon.  If convergence is
 not obtained then the code tries again using a smaller value
 of epsilon.
 
-This code implements to axisymmetric verion, with changes to
-the deformation gradient tensor, determinant, and divergence.
+This code is 2-D (not axisymmetric)
 
 """
 
@@ -198,8 +194,6 @@ for ii in range(1):
     p_f: fluid pressure from Stokes equations
     
     u_s: solid displacement from compressible nonlinear elasticity
-    
-    u_fil: filtration velocity in the particle
     p_p: Darcy pressure
     
     f_0: Lagrange multiplier corresponding to the force needed to pin the
