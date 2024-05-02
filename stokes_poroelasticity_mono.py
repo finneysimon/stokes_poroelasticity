@@ -126,11 +126,11 @@ for ii in range(1):
     """
 
     # the initial value of epsilon to try solving the problem with
-    eps_try = 0.05
+    eps_try = 0.000001
     eps = Constant(eps_try)
 
     # the max value of epsilon
-    eps_max = 0.5
+    eps_max = 0.000001
 
     # the incremental increase in epsilon
     de = 0.05
@@ -143,7 +143,7 @@ for ii in range(1):
     lambda_s = 1
     phi_f_0 = 1 - 0.5
     kappa_0 = 0.001
-    gamma = 1
+    gamma = 0
 
     # define the boundaries (values from the gmsh file)
     circle = 1
@@ -195,6 +195,7 @@ for ii in range(1):
     
     u_s: solid displacement from compressible nonlinear elasticity
     p_p: Darcy pressure
+    C: nominal porosity
     
     f_0: Lagrange multiplier corresponding to the force needed to pin the
     solid in place (should end up being zero since particle is free)
@@ -213,21 +214,21 @@ for ii in range(1):
     displacement (ensures compatibility between fluid/solid domains)
     
     """
-    mixed_element = BlockElement(V2, P1, V2, P1, P0, P0, P0, V2, DGT)
+    mixed_element = BlockElement(V2, P1, V2, P1, P1, P0, P0, P0, V2, DGT)
     V = BlockFunctionSpace(mesh, mixed_element,
-                           restrict=[Of, Of, Os, Os, Os, Os, Of, Of, Sig])
+                           restrict=[Of, Of, Os, Os, Os, Os, Os, Of, Of, Sig])
     # mixed_element = BlockElement(V2, P1, V2, P1, P0, P0, DGT, P0, V2, DGT)
     # V = BlockFunctionSpace(mesh, mixed_element,
     #                        restrict=[Of, Of, Os, Os, Os, Os, Sig, Of, Of, Sig])
 
     X = BlockFunction(V)
-    (u_f, p_f, u_s, p_p, f_0, U_0, lam_p, u_a, lam_a) = block_split(X)
+    (u_f, p_f, u_s, p_p, C, f_0, U_0, lam_p, u_a, lam_a) = block_split(X)
     # (u_f, p_f, u_s, p_p, f_0, U_0, lam, lam_p, u_a, lam_a) = block_split(X)
 
 
     # unknowns and test functions
     Y = BlockTestFunction(V)
-    (v_f, q_f, v_s, q_p, g_0, V_0, eta_p, v_a, eta_a) = block_split(Y)
+    (v_f, q_f, v_s, q_p, CC, g_0, V_0, eta_p, v_a, eta_a) = block_split(Y)
     # (v_f, q_f, v_s, q_p, g_0, V_0, eta, eta_p, v_a, eta_a) = block_split(Y)
 
     Xt = BlockTrialFunction(V)
@@ -242,7 +243,7 @@ for ii in range(1):
     """
     Physical boundary conditions
     """
-    #    (u_f, p_f, u_s, p_p, f_0, U_0, lam, lam_p, u_a, lam_a)
+    #    (u_f, p_f, u_s, p_p, C, f_0, U_0, lam, lam_p, u_a, lam_a)
     # Far-field fluid velocity
     far_field = Expression(('(1 - x[1] * x[1] / 0.25) * t', '0'), degree=0, t=1)
     # far_field = Expression(('0', '0'), degree=0, t=1)
@@ -268,10 +269,10 @@ for ii in range(1):
     displacement.  These are no normal displacements
     """
      # incompressible
-    ac_inlet = DirichletBC(V.sub(7).sub(0), Constant((0)), bdry, inlet)
-    ac_outlet = DirichletBC(V.sub(7).sub(0), Constant((0)), bdry, outlet)
-    ac_fluid_axis = DirichletBC(V.sub(7).sub(1), Constant((0)), bdry, fluid_axis)
-    ac_wall = DirichletBC(V.sub(7).sub(1), Constant((0)), bdry, wall)
+    ac_inlet = DirichletBC(V.sub(8).sub(0), Constant((0)), bdry, inlet)
+    ac_outlet = DirichletBC(V.sub(8).sub(0), Constant((0)), bdry, outlet)
+    ac_fluid_axis = DirichletBC(V.sub(8).sub(1), Constant((0)), bdry, fluid_axis)
+    ac_wall = DirichletBC(V.sub(8).sub(1), Constant((0)), bdry, wall)
     # ac_inlet = DirichletBC(V.sub(8).sub(0), Constant((0)), bdry, inlet)
     # ac_outlet = DirichletBC(V.sub(8).sub(0), Constant((0)), bdry, outlet)
     # ac_fluid_axis = DirichletBC(V.sub(8).sub(1), Constant((0)), bdry, fluid_axis)
@@ -300,14 +301,17 @@ for ii in range(1):
     J_s = det(F)
     Sigma_s = 1 / eps * (F - H) + lambda_s / eps * (J_s - 1) * J_s * H - p_p * J_s * H
 
+    # linear elasticity
+    # Sigma_s = lambda_s / eps * div(u_s) * I + (grad(u_s) + grad(u_s).T) / eps - p_p * J_s * H
+
     # Eulerian fluid fraction (porosity)
-    phi_f = phi_f_0 / J_s
+    phi_f = 1 - (1 - phi_f_0) / J_s
 
     # Permeability tensor
     K = kappa_0 * J_s * inv(F.T * F)
 
     # incompressibility
-    # ic_s = J_s - (1 + C - phi_f_0)
+    ic_s = J_s - (1 + C - phi_f_0)
 
     # eul normal and tangent
     nn_eul = H * nn / sqrt(inner(H * nn, H * nn))
@@ -376,8 +380,8 @@ for ii in range(1):
     # '-' solid, '+' fluid
     # Stokes equations for the fluid
     FUN1 = (-inner(Sigma_f, grad(v_f)) * dx(fluid)
-            + inner(v_f('+'), J_s('-') * p_p('-') * H('-') * nn('-')
-            + inner(u_f('+') + 1 / J_s('-') * F('-') * K('-') * grad(p_p('-')) - as_vector([U_0('-'), 0]), tt_eul('-'))
+            - dot(v_f('+'), J_s('-') * p_p('-') * H('-') * nn('-')
+            + gamma * dot(u_f('+') + 1 / J_s('-') * F('-') * K('-') * grad(p_p('-')) - as_vector([U_0('-'), 0]), tt_eul('-'))
             * tt_eul('-') * J_s('-') * sqrt(inner(H('-') * nn('-'), H('-') * nn('-')))) * dS)
             # + inner(lam("+"), v_f("+")) * dS)
             # + inner(solid_traction("+"), v_f("+")) * r("+") * dS)
@@ -393,25 +397,24 @@ for ii in range(1):
     FUN3 = (-inner(Sigma_s, grad(v_s)) * dx(solid)
             # - inner(solid_traction("-"), v_s("-")) * r("-") * dS  # artificial traction
             + inner(as_vector([f_0, 0]), v_s) * dx(solid)  # equilibrium condition
-            - inner(Sigma_f('+') * nn('-'), v_s("-")) * dS)
+            # - inner(Sigma_f('+') * nn('-'), v_s("-")) * dS)
+            + dot(v_s('-'), J_s('-') * p_p('-') * H('-') * nn('-')
+            - gamma * dot(u_f('+') + 1 / J_s('-') * F('-') * K('-') * grad(p_p('-')) - as_vector([U_0('-'), 0]), tt_eul('-'))
+             * tt_eul('-') * J_s('-') * sqrt(inner(H('-') * nn('-'), H('-') * nn('-')))) * dS)
             # - inner(lam("-"), v_s("-")) * dS)  # fluid traction balances with solid stress + darcy pressure
 
-    # linear elasticity for the solid
-    # FUN3 = (-inner(Sigma_s, grad(v_s)) * dx(solid)
-    #         + inner(as_vector([f_0, 0]), v_s) * dx(solid)
-    #         - inner(lam("-"), v_s("-")) * dS)
     # # Incompressibility condition
-    # FUN4 = ic_s * q_p * dx(solid)
+    FUN4 = ic_s * q_p * dx(solid)
 
     # Darcy's law with incompressibility, intergate by parts and add flux continuity - no body force
     # FUN5 = (inner(K * grad(p_p), grad(CC)) * dx(solid)  # Darcy's law
     #         + J_s('-') * inner(H('-') * u_f('+'), nn('-')) * CC('-') * dS)  # flux continuity
 
-    # -k grad(p_p) = q - v_s
+    # -k grad(p_p) + v_s = q & div(q) = 0
     # conservation of mass for fluid and solid phases in particle
-    FUN4 = (inner(K * grad(p_p), grad(q_p)) * dx(solid)
-            - inner(J_s * H.T * as_vector([U_0, 0]), grad(q_p)) * dx(solid)
-           + J_a('+') * inner(H_a('+') * u_f('+'), nn("-")) * q_p('-') * dS)
+    FUN5 = (inner(K * grad(p_p), grad(CC)) * dx(solid)
+            - inner(J_s * H.T * as_vector([U_0, 0]), grad(CC)) * dx(solid)
+           + J_a('+') * inner(H_a.T('+') * u_f('+'), nn("-")) * CC('-') * dS)
 
     # Continuity of fluid pressure and beavers and Joseph
     # FUN5 = inner(avg(eta), lam('+') - J_s('-') * p_p('-') * H('-') * nn('-')
@@ -419,7 +422,8 @@ for ii in range(1):
     #              * tt_eul('-') * J_s('-') * sqrt(inner(H('-') * nn('-'), H('-') * nn('-')))) * dS
 
     # No total axial traction on the solid (ez . sigma_s . n = int_V f dV)
-    FUN6 = dot(ez, Sigma_f('+') * nn('-')) * V_0("-") * dS - f_TEST * V_0 * dx(solid)
+    FUN6 = dot(ez, J_s('-') * p_p('-') * H('-') * nn('-')) * V_0("-") * dS - f_TEST * V_0 * dx(solid)
+    # FUN6 = dot(ez, Sigma_f('+') * nn('-')) * V_0("-") * dS - f_TEST * V_0 * dx(solid)
 
     # ALE bulk equation
     FUN7 = (-inner(sigma_a, grad(v_a)) * dx(fluid)
@@ -435,7 +439,7 @@ for ii in range(1):
     FUN10 = p_f * eta_p * dx(fluid)
 
     # Combine equations and compute Jacobian
-    FUN = [FUN1, FUN2, FUN3, FUN4, FUN6, FUN7, FUN8, FUN9, FUN10]
+    FUN = [FUN1, FUN2, FUN3, FUN4, FUN5, FUN6, FUN7, FUN8, FUN9, FUN10]
     # FUN = [FUN1, FUN2, FUN3, FUN4, FUN5, FUN6, FUN7, FUN8, FUN9, FUN10]
     JAC = block_derivative(FUN, X, Xt)
 
@@ -449,7 +453,7 @@ for ii in range(1):
     solver.parameters.update(snes_solver_parameters["snes_solver"])
 
     # extract solution components
-    (u_f, p_f, u_s, p_p, f_0, U_0, lam_p, u_a, lam_a) = X.block_split()
+    (u_f, p_f, u_s, p_p, C, f_0, U_0, lam_p, u_a, lam_a) = X.block_split()
     # (u_f, p_f, u_s, p_p, f_0, U_0, lam, lam_p, u_a, lam_a) = X.block_split()
 
     # ---------------------------------------------------------------------
