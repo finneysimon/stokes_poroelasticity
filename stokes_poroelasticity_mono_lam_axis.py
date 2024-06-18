@@ -1,6 +1,6 @@
 """
 This is a monolithic solver for pressure-driven flow around a
-poroelastic particle.
+poroelastic particle. Axisymmetric version.
 
 The problem is formulated using the ALE
 method, which maps the deformed geometry to the initial
@@ -42,12 +42,16 @@ def write_list_as_row(file_name, list_of_elem):
         csv_writer = writer(write_obj)
         csv_writer.writerow(list_of_elem)
 
+
 # ---------------------------------------------------------------------
 # Setting up file names and paramerers
 # ---------------------------------------------------------------------
 # directory for file output
-dir = '/home/simon/data/fenics/stokes_poroelasticity/'
+dir = '/home/simon/data/fenics/stokes_poroelasticity_axis/'
 
+
+def diva(vec, r):
+    return div(vec) + vec[1] / r
 
 def generate_output_files(rad):
     output_s = XDMFFile(dir + "poro_2d_solid_0-"
@@ -104,7 +108,7 @@ for ii in range(1):
     eps = Constant(eps_try)
 
     # the max value of epsilon
-    eps_max = 0.4
+    eps_max = 0.005
 
     # the incremental increase in epsilon
     de = 0.005
@@ -118,7 +122,7 @@ for ii in range(1):
     phi_f_0 = 1 - 0.5
     k0_try = 1.e-2
     kappa_0 = Constant(k0_try)
-    g0_try = 1.e0
+    g0_try = 1.e2
     gamma = Constant(g0_try)
 
     # parameter continuation in kappa
@@ -192,7 +196,7 @@ for ii in range(1):
 
     lam: Lagrange multiplier corresponding to the fluid traction 
     acting on the solid
-    
+
     lam_2: Lagrange multiplier corresponding to the normal fluid flux
 
     lam_p: Lagrange multiplier to ensure the mean fluid pressure is zero
@@ -228,7 +232,7 @@ for ii in range(1):
     Physical boundary conditions
     """
     # Far-field fluid velocity
-    far_field = Expression(('(1 - x[1] * x[1]) * t', '0'), degree=0, t=1)  #  / 0.25
+    far_field = Expression(('(1 - x[1] * x[1]) * t', '0'), degree=0, t=1)  # / 0.25
 
     # impose the far-field fluid velocity upstream and downstream
     bc_inlet = DirichletBC(V.sub(0), far_field, bdry, inlet)
@@ -273,7 +277,7 @@ for ii in range(1):
 
     # (non-dim) compressible PK1 stress tensor with Darcy pressure
     lambda_s = 1  # nu_s = lambda_s/(2(lambda_s + mu_s))
-    J_s = det(F)
+    J_s = det(F) * (1 + u_s[1] / r)
     Sigma_s = 1 / eps * (F - H) + lambda_s / eps * (J_s - 1) * J_s * H - p_p * J_s * H
 
     # linear elasticity
@@ -283,9 +287,9 @@ for ii in range(1):
     K = kappa_0 * J_s * inv(F.T * F)
 
     # eul normal and tangent
-    nn_eul = H * nn / sqrt(inner(H * nn, H * nn))
-    TT_eul = I - outer(nn_eul, nn_eul)
-    tt_eul = F * tt / sqrt(inner(F * tt, F * tt))
+    # nn_eul = H * nn / sqrt(inner(H * nn, H * nn))
+    # TT_eul = I - outer(nn_eul, nn_eul)
+    # tt_eul = F * tt / sqrt(inner(F * tt, F * tt))
 
 
     # functions for post-processing projections
@@ -294,16 +298,18 @@ for ii in range(1):
 
 
     def J_s_func(u_s):
-        return det(F_func(u_s))
+        return det(F_func(u_s)) * (1 + u_s[1] / r)
 
 
     def H_func(u_s):
         return inv(F_func(u_s).T)
 
+
     # neo-Hookean - no darcy pressure
     def Sigma_s_func(u_s, p_p, eps):
         return (1 / eps * (F_func(u_s) - H_func(u_s))
                 + lambda_s / eps * (J_s_func(u_s) - 1) * J_s_func(u_s) * H_func(u_s))
+
 
     # linear - no darcy pressure
     # def Sigma_s_func(u_s, p_p, eps):
@@ -324,15 +330,16 @@ for ii in range(1):
     H_a = inv(F_a.T)
 
     # Jacobian for the fluid
-    J_a = det(F_a)
+    J_a = det(F_a) * (1 + u_a[1] / r)
 
     # PK1 stress tensor and incompressibility condition for the fluid
     Sigma_f = J_a * (-p_f * I + grad(u_f) * H_a.T + H_a * grad(u_f).T) * H_a
-    ic_f = div(J_a * inv(F_a) * u_f)
+    ic_f = diva(J_a * inv(F_a) * u_f, r)
 
 
     def Sigma_f_func(u_f, p_f, u_a):
         return (J_s_func(u_a) * (-p_f * I + grad(u_f) * H_func(u_a).T + H_func(u_a) * grad(u_f).T) * H_func(u_a))
+
 
     """
     ALE problem: there are three different versions below
@@ -344,7 +351,7 @@ for ii in range(1):
     # linear elasticity
     nu_a = Constant(0.1)
     E_a = 0.5 * (grad(u_a) + grad(u_a).T)
-    sigma_a = nu_a / (1 + nu_a) / (1 - 2 * nu_a) * div(u_a) * I + 1 / (1 + nu_a) * E_a
+    sigma_a = nu_a / (1 + nu_a) / (1 - 2 * nu_a) * diva(u_a, r) * I + 1 / (1 + nu_a) * E_a
 
     # nonlinear elasticity
     # nu_a = Constant(0.48)
@@ -357,67 +364,59 @@ for ii in range(1):
 
     # '-' solid, '+' fluid
     # Stokes equations for the fluid
-    FUN1 = (-inner(Sigma_f, grad(v_f)) * dx(fluid)
-            + inner(lam("+"), v_f("+")) * dS)
+    FUN1 = (-inner(Sigma_f, grad(v_f)) * r * dx(fluid)
+            - J_a * (2 * u_f[1] * v_f[1] / (r + u_a[1]) ** 2 - p_f * v_f[1] / (r + u_a[1])) * r * dx(fluid)
+            + inner(lam("+"), v_f("+")) * r('+') * dS)
 
     # Incompressibility for the fluid
-    FUN2 = ic_f * q_f * dx(fluid) + lam_p * q_f * dx(fluid)
+    FUN2 = (ic_f * q_f * r * dx(fluid)
+            + lam_p * q_f * r * dx(fluid))
 
     f_body = 0
 
     # Nonlinear elasticity for the solid balancing with the Darcy pressure
     # compressible with Darcy pressure
-    FUN3 = (-inner(Sigma_s, grad(v_s)) * dx(solid)
-            + inner(as_vector([f_0, 0]), v_s) * dx(solid)  # equilibrium condition
-            - inner(lam("-"), v_s("-")) * dS)  # fluid traction balances with solid stress + darcy pressure
-
-    # # Incompressibility condition
-    # FUN4 = ic_s * q_p * dx(solid)
+    FUN3 = (-inner(Sigma_s, grad(v_s)) * r * dx(solid)
+            - 1 / eps * (1 + u_s[1] / r) * v_s[1] * dx(solid)
+            + (1 / eps - lambda_s / eps * (J_s - 1) * J_s + J_s * p_p) * v_s[1] * r / (r + u_s[1]) * dx(solid)
+            + inner(as_vector([f_0, 0]), v_s) * r * dx(solid)  # equilibrium condition
+            - inner(lam("-"), v_s("-")) * r('+') * dS)  # fluid traction balances with solid stress + darcy pressure
 
     # div(Q + J F^-1 v_s) = 0, Q = -k J F^-1 F^-T grad(p_p)
     # conservation of mass for fluid and solid phases in particle
-    FUN4 = (inner(K * grad(p_p), grad(q_p)) * dx(solid)
-            - inner(J_s * H.T * as_vector([U_0, 0]), grad(q_p)) * dx(solid)
-            + lam_2('+') * q_p('-') * dS)  # lam_2 = u.N
-
-    # fluid flux continuity no slip q = -k * H * grad(p_p) + U_0 e_z
-    # FUN5 = inner(avg(eta), u_f('+') + kappa_0 * H('-') * grad(p_p('-')) - as_vector([U_0('-'), 0])) * dS
-
-    # fluid flux continuity (inc B&J condition - gamma not eq 0)
-    # FUN5 = inner(avg(eta), u_f('+') + kappa_0 * H('-') * grad(p_p('-')) - as_vector([U_0('-'), 0])
-    #              - 1 / gamma * dot(Sigma_f('+') * nn('-'), TT_eul('-'))) * dS
+    FUN4 = (inner(K * grad(p_p), grad(q_p)) * r * dx(solid)
+            - inner(J_s * H.T * as_vector([U_0, 0]), grad(q_p)) * r * dx(solid)
+            + lam_2('+') * q_p('-') * r('+') * dS)  # lam_2 = u.N
 
     # stress balance
     # FUN5 = inner(avg(eta), lam('+') - J_s('-') * p_p('-') * dot(H('-'), nn('-'))) * dS
 
     # stress balance - beavers and joseph (try gamma small for now)
     FUN5 = (inner(avg(eta), lam('+') - J_s('-') * p_p('-') * dot(H('-'), nn('-'))
-                 + gamma * J_s('-') * sqrt(inner(H('-') * nn('-'), H('-') * nn('-')))
-                 * (u_f('+') + kappa_0 * H('-') * grad(p_p('-')) - as_vector([U_0('-'), 0]))) * dS)
-
-    # Darcy stress balances with normal Stokes stress n.lam = -p
-    # FUN11 = inner(avg(eta_2), -J_s('-') * sqrt(inner(H('-') * nn('-'), H('-') * nn('-'))) * p_p('-')
-    #               + dot(nn_eul('-'), lam('+'))) * dS
+                  + gamma * J_s('-') * sqrt(inner(H('-') * nn('-'), H('-') * nn('-')))
+                  * (u_f('+') + kappa_0 * H('-') * grad(p_p('-')) - as_vector([U_0('-'), 0]))) * r('+') * dS)
 
     # Vel continuity
     FUN11 = inner(avg(eta_2),
-                  dot(u_f('+') + kappa_0 * H('-') * grad(p_p('-')) - as_vector([U_0('-'), 0]), nn('-'))) * dS
+                  dot(u_f('+') + kappa_0 * H('-') * grad(p_p('-')) - as_vector([U_0('-'), 0]), nn('-'))) * r('+') * dS
 
     # No total axial traction on the solid (ez . sigma_s . n = int_V f dV)
-    FUN6 = dot(ez, lam('+')) * V_0("-") * dS - f_body * V_0 * dx(solid)
+    FUN6 = dot(ez, lam('+')) * V_0("-") * r('+') * dS - f_body * V_0 * r * dx(solid)
 
     # ALE bulk equation
-    FUN7 = (-inner(sigma_a, grad(v_a)) * dx(fluid)
-            + inner(lam_a("+"), v_a("+")) * dS)
+    FUN7 = (-inner(sigma_a, grad(v_a)) * r * dx(fluid)
+            - 1 / (1 + nu_a) * u_a[1] * v_a[1] / r * dx(fluid)
+            - nu_a / (1 + nu_a) / (1 - 2 * nu_a) * diva(u_a, r) * v_a[1] * dx(fluid)
+            + inner(lam_a("+"), v_a("+")) * r('+') * dS)
 
     # Continuity of fluid and solid displacement
-    FUN8 = inner(avg(eta_a), u_a("+") - u_s("-")) * dS
+    FUN8 = inner(avg(eta_a), u_a("+") - u_s("-")) * r('+') * dS
 
     # mean axial solid displacement is zero
-    FUN9 = dot(ez, u_s) * g_0 * dx(solid)
+    FUN9 = dot(ez, u_s) * g_0 * r * dx(solid)
 
     # mean fluid pressure is zero
-    FUN10 = p_f * eta_p * dx(fluid)
+    FUN10 = p_f * eta_p * r * dx(fluid)
 
     # Combine equations and compute Jacobian
     FUN = [FUN1, FUN2, FUN3, FUN4, FUN5, FUN6, FUN7, FUN8, FUN9, FUN10, FUN11]
@@ -491,7 +490,6 @@ for ii in range(1):
 
         VhFD = VectorFunctionSpace(mesh_f, 'DG', 0)
         sigma_f_int = interpolate(sig_f, VhFD)
-
 
         u_f_only.rename("u_f", "u_f")
         p_f_only.rename("p_f", "p_f")

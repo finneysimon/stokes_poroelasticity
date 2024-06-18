@@ -1,0 +1,5 @@
+/tmp/tmp5kmi41w4/dolfin_expression_c35a94dbbdb724cf115f2512abefb019.cpp: In member function ‘virtual void dolfin::dolfin_expression_c35a94dbbdb724cf115f2512abefb019::eval(Eigen::Ref<Eigen::Matrix<double, -1, 1> >, Eigen::Ref<const Eigen::Matrix<double, -1, 1> >) const’:
+/tmp/tmp5kmi41w4/dolfin_expression_c35a94dbbdb724cf115f2512abefb019.cpp:65:42: error: ‘V_a’ was not declared in this scope; did you mean ‘Va’?
+   65 |           values[0] = (1 - x[1] * x[1] - V_a) *  t;
+      |                                          ^~~
+      |                                          Va

@@ -1,0 +1,5 @@
+/tmp/tmpol8i69fm/ffc_form_f5c58d5ed09c5f47cdbcd21502d3bd27f46bfb05.cpp: In member function ‘virtual void ffc_form_f5c58d5ed09c5f47cdbcd21502d3bd27f46bfb05_cell_integral_main_11::tabulate_tensor(double*, const double* const*, const double*, int) const’:
+/tmp/tmpol8i69fm/ffc_form_f5c58d5ed09c5f47cdbcd21502d3bd27f46bfb05.cpp:120:32: error: ‘coordinate_dofs_0’ was not declared in this scope; did you mean ‘coordinate_dofs’?
+  120 |         const double x_r0_c1 = coordinate_dofs_0[1] * FE6_C0_Q6[0][iq][0] + coordinate_dofs_0[3] * FE6_C0_Q6[0][iq][1] + coordinate_dofs_0[5] * FE6_C0_Q6[0][iq][2];
+      |                                ^~~~~~~~~~~~~~~~~
+      |                                coordinate_dofs

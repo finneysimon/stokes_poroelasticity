@@ -1,6 +1,6 @@
 """
-This is a monolithic solver for pressure-driven flow around a
-poroelastic particle.
+This is a monolithic solver for pressure-driven flow around an elastic particle
+with quasi time dependence.
 
 The problem is formulated using the ALE
 method, which maps the deformed geometry to the initial
@@ -10,7 +10,7 @@ WarpByVector filter in Paraview using the displacement
 computed in the fluid domain.
 
 The problem uses Lagrange multipliers to ensure zero mean fluid
-pressure and zero net z-displacement
+pressure
 
 The code works by initially solving the problem with a small
 value of epsilon (ratio of fluid stress to elastic stiffness)
@@ -18,7 +18,7 @@ and then gradually ramping up epsilon.  If convergence is
 not obtained then the code tries again using a smaller value
 of epsilon.
 
-This code is 2-D (not axisymmetric)
+The code is 2-D (not axisymmetric)
 
 """
 
@@ -41,6 +41,7 @@ def write_list_as_row(file_name, list_of_elem):
     with open(file_name, 'w', newline='') as write_obj:
         csv_writer = writer(write_obj)
         csv_writer.writerow(list_of_elem)
+
 
 # ---------------------------------------------------------------------
 # Setting up file names and paramerers
@@ -75,6 +76,13 @@ def get_mesh(rad):
     return mesh, subdomains, bdry
 
 
+def td_func(t_val):
+    # return np.tanh(t_val)
+    if t_val <= 1:
+        return t_val
+    else:
+        return 1
+
 """
 Solver parameters
 """
@@ -99,39 +107,21 @@ for ii in range(1):
         Physical parameters
     """
 
-    # the initial value of epsilon to try solving the problem with
-    eps_try = 0.005
-    eps = Constant(eps_try)
-
-    # the max value of epsilon
-    eps_max = 0.4
-
-    # the incremental increase in epsilon
-    de = 0.005
-
-    # the min and max values of the increments to make.
-    de_min = 1e-3
-    de_max = 1e-1
-
     # physical parameters
     lambda_s = 1  # lambda = 2*nu/(1-2*nu)
+    m = 1  # artificial mass
+    eps = 0.2  # softness of particle
     phi_f_0 = 1 - 0.5
     k0_try = 1.e-2
+    print("Permeability", k0_try)
     kappa_0 = Constant(k0_try)
-    g0_try = 1.e0
-    gamma = Constant(g0_try)
+    gamma = 1.e6
 
-    # parameter continuation in kappa
-    dk0 = 1.e-3
-    k0_conv = 0
-    dk0_min = 1.e-5
-    k0_max = 1.e-2
-
-    # parameter continuation in gamma
-    dg0 = 1.
-    g0_conv = 0
-    dg0_min = 1.e-1
-    g0_max = 100
+    # computational parameters
+    dt = Constant(5.e-2)
+    Nt = 100
+    t_vec = np.zeros(Nt + 1)
+    t_d = Constant(0)  # for now
 
     # define the boundaries (values from the gmsh file)
     circle = 1
@@ -155,7 +145,7 @@ for ii in range(1):
     dS = dS(circle)
 
     # normal and tangent vectors
-    nn = FacetNormal(mesh);
+    nn = FacetNormal(mesh)
     tt = as_vector((-nn[1], nn[0]))
 
     ez = as_vector([1, 0])
@@ -170,8 +160,6 @@ for ii in range(1):
     # ---------------------------------------------------------------------
     V2 = VectorElement("CG", mesh.ufl_cell(), 2)
     P1 = FiniteElement("CG", mesh.ufl_cell(), 1)
-    # P2 = FiniteElement("CG", mesh.ufl_cell(), 2)
-    # DGT = VectorElement("DGT", mesh.ufl_cell(), 1)
     DGT = VectorElement("CG", mesh.ufl_cell(), 1)
     DGT_FE = FiniteElement("CG", mesh.ufl_cell(), 1)
     P0 = FiniteElement("R", mesh.ufl_cell(), 0)
@@ -192,7 +180,7 @@ for ii in range(1):
 
     lam: Lagrange multiplier corresponding to the fluid traction 
     acting on the solid
-    
+
     lam_2: Lagrange multiplier corresponding to the normal fluid flux
 
     lam_p: Lagrange multiplier to ensure the mean fluid pressure is zero
@@ -204,21 +192,29 @@ for ii in range(1):
     displacement (ensures compatibility between fluid/solid domains)
 
     """
-    mixed_element = BlockElement(V2, P1, V2, P1, P0, P0, DGT, DGT_FE, P0, V2, DGT)
+    mixed_element = BlockElement(V2, P1, V2, P1, P0, P0, DGT, DGT_FE, P0, V2, DGT, P0)
     V = BlockFunctionSpace(mesh, mixed_element,
-                           restrict=[Of, Of, Os, Os, Os, Os, Sig, Sig, Of, Of, Sig])
+                           restrict=[Of, Of, Os, Os, Os, Os, Sig, Sig, Of, Of, Sig, Os])
 
     X = BlockFunction(V)
-    (u_f, p_f, u_s, p_p, f_0, U_0, lam, lam_2, lam_p, u_a, lam_a) = block_split(X)
+    (u_f, p_f, u_s, p_p, f_0, U_0, lam, lam_2, lam_p, u_a, lam_a, u_com) = block_split(X)
 
     # unknowns and test functions
     Y = BlockTestFunction(V)
-    (v_f, q_f, v_s, q_p, g_0, V_0, eta, eta_2, eta_p, v_a, eta_a) = block_split(Y)
+    (v_f, q_f, v_s, q_p, g_0, V_0, eta, eta_2, eta_p, v_a, eta_a, v_com) = block_split(Y)
 
     Xt = BlockTrialFunction(V)
 
     # Placeholder for the last converged solution
     X_old = BlockFunction(V)
+    (u_f_old, p_f_old, u_s_old, p_p_old, f_0_old, U_0_old, lam_old, lam_2_old,
+     lam_p_old, u_a_old, lam_a_old, u_com_old) = block_split(X_old)
+
+    # u_f, p_f, u_s as expected
+    # u_vel - solid velocity
+    # f_0 - body force should go to zero
+    # U_0 - mean axial solid velocity
+    # u_com - mean z displacement
 
     # ---------------------------------------------------------------------
     # boundary conditions
@@ -228,7 +224,7 @@ for ii in range(1):
     Physical boundary conditions
     """
     # Far-field fluid velocity
-    far_field = Expression(('(1 - x[1] * x[1]) * t', '0'), degree=0, t=1)  #  / 0.25
+    far_field = Expression(('(1 - x[1] * x[1]) * t_d', '0'), degree=0, t_d=t_d)  # * t_d / (1 + t_d) / 0.25
 
     # impose the far-field fluid velocity upstream and downstream
     bc_inlet = DirichletBC(V.sub(0), far_field, bdry, inlet)
@@ -274,10 +270,15 @@ for ii in range(1):
     # (non-dim) compressible PK1 stress tensor with Darcy pressure
     lambda_s = 1  # nu_s = lambda_s/(2(lambda_s + mu_s))
     J_s = det(F)
-    Sigma_s = 1 / eps * (F - H) + lambda_s / eps * (J_s - 1) * J_s * H - p_p * J_s * H
+    # neo-Hookean
+    # Sigma_s = 1 / eps * (F - H) + lambda_s / eps * (J_s - 1) * J_s * H - p_p * J_s * H
+
+    # st Venant-Kirchoff
+    # E_s = 1 / 2 * (F.T * F - I)
+    # Sigma_s = F * (lambda_s / eps * tr(E_s) * I + 2 / eps * E_s) - p_p * J_s * H
 
     # linear elasticity
-    # Sigma_s = lambda_s / eps * div(u_s) * I + (grad(u_s) + grad(u_s).T) / eps - p_p * J_s * H
+    Sigma_s = lambda_s / eps * div(u_s) * I + (grad(u_s) + grad(u_s).T) / eps - p_p * J_s * H
 
     # Permeability tensor
     K = kappa_0 * J_s * inv(F.T * F)
@@ -286,7 +287,6 @@ for ii in range(1):
     nn_eul = H * nn / sqrt(inner(H * nn, H * nn))
     TT_eul = I - outer(nn_eul, nn_eul)
     tt_eul = F * tt / sqrt(inner(F * tt, F * tt))
-
 
     # functions for post-processing projections
     def F_func(u_s):
@@ -300,18 +300,25 @@ for ii in range(1):
     def H_func(u_s):
         return inv(F_func(u_s).T)
 
-    # neo-Hookean - no darcy pressure
-    def Sigma_s_func(u_s, p_p, eps):
-        return (1 / eps * (F_func(u_s) - H_func(u_s))
-                + lambda_s / eps * (J_s_func(u_s) - 1) * J_s_func(u_s) * H_func(u_s))
+
+    # def Sigma_s_func(u_s, p_p, eps):
+    #     return (1 / eps * (F_func(u_s) - H_func(u_s))
+    #             + lambda_s / eps * (J_s_func(u_s) - 1) * J_s_func(u_s) * H_func(u_s)
+    #             - p_p * J_s_func(u_s) * H_func(u_s))
+    # St Venant
+    # def E_s_func(u_s):
+    #     return 1 / 2 * (F_func(u_s).T * F_func(u_s) - I)
+
+    # def Sigma_s_func(u_s, p_p, eps):
+    #     return (F_func(u_s) * (lambda_s / eps * tr(E_s_func(u_s)) * I + 2 / eps * E_s_func(u_s))
+    #             - p_p * J_s_func(u_s) * H_func(u_s))
 
     # linear - no darcy pressure
-    # def Sigma_s_func(u_s, p_p, eps):
-    #     return (lambda_s / eps * div(u_s) * I + (grad(u_s) + grad(u_s).T) / eps)
+    def Sigma_s_func(u_s, p_p, eps):
+        return (lambda_s / eps * div(u_s) * I + (grad(u_s) + grad(u_s).T) / eps)
 
     def darcy_flux(p_p):
         return -kappa_0 * H_func(u_s) * grad(p_p)
-
 
     """
     External Fluids problem: mapping the current configuration to the 
@@ -334,6 +341,7 @@ for ii in range(1):
     def Sigma_f_func(u_f, p_f, u_a):
         return (J_s_func(u_a) * (-p_f * I + grad(u_f) * H_func(u_a).T + H_func(u_a) * grad(u_f).T) * H_func(u_a))
 
+
     """
     ALE problem: there are three different versions below
     """
@@ -355,7 +363,7 @@ for ii in range(1):
     # build equations
     # ---------------------------------------------------------------------
 
-    # '-' solid, '+' fluid
+    # "-"" solid, "+"" fluid
     # Stokes equations for the fluid
     FUN1 = (-inner(Sigma_f, grad(v_f)) * dx(fluid)
             + inner(lam("+"), v_f("+")) * dS)
@@ -368,43 +376,28 @@ for ii in range(1):
     # Nonlinear elasticity for the solid balancing with the Darcy pressure
     # compressible with Darcy pressure
     FUN3 = (-inner(Sigma_s, grad(v_s)) * dx(solid)
-            + inner(as_vector([f_0, 0]), v_s) * dx(solid)  # equilibrium condition
-            - inner(lam("-"), v_s("-")) * dS)  # fluid traction balances with solid stress + darcy pressure
+            + inner(as_vector([f_0, 0]), v_s) * dx(solid)
+            - inner(lam("-"), v_s("-")) * dS)  # fluid traction balances with solid stress
 
-    # # Incompressibility condition
-    # FUN4 = ic_s * q_p * dx(solid)
-
-    # div(Q + J F^-1 v_s) = 0, Q = -k J F^-1 F^-T grad(p_p)
-    # conservation of mass for fluid and solid phases in particle
     FUN4 = (inner(K * grad(p_p), grad(q_p)) * dx(solid)
             - inner(J_s * H.T * as_vector([U_0, 0]), grad(q_p)) * dx(solid)
             + lam_2('+') * q_p('-') * dS)  # lam_2 = u.N
 
-    # fluid flux continuity no slip q = -k * H * grad(p_p) + U_0 e_z
-    # FUN5 = inner(avg(eta), u_f('+') + kappa_0 * H('-') * grad(p_p('-')) - as_vector([U_0('-'), 0])) * dS
+    # stress continuity no Beavers and Joseph for now
+    FUN5 = inner(avg(eta), lam('+') - J_s('-') * p_p('-') * dot(H('-'), nn('-'))) * dS
 
-    # fluid flux continuity (inc B&J condition - gamma not eq 0)
-    # FUN5 = inner(avg(eta), u_f('+') + kappa_0 * H('-') * grad(p_p('-')) - as_vector([U_0('-'), 0])
-    #              - 1 / gamma * dot(Sigma_f('+') * nn('-'), TT_eul('-'))) * dS
-
-    # stress balance
-    # FUN5 = inner(avg(eta), lam('+') - J_s('-') * p_p('-') * dot(H('-'), nn('-'))) * dS
-
-    # stress balance - beavers and joseph (try gamma small for now)
-    FUN5 = (inner(avg(eta), lam('+') - J_s('-') * p_p('-') * dot(H('-'), nn('-'))
-                 + gamma * J_s('-') * sqrt(inner(H('-') * nn('-'), H('-') * nn('-')))
-                 * (u_f('+') + kappa_0 * H('-') * grad(p_p('-')) - as_vector([U_0('-'), 0]))) * dS)
-
-    # Darcy stress balances with normal Stokes stress n.lam = -p
-    # FUN11 = inner(avg(eta_2), -J_s('-') * sqrt(inner(H('-') * nn('-'), H('-') * nn('-'))) * p_p('-')
-    #               + dot(nn_eul('-'), lam('+'))) * dS
-
-    # Vel continuity
+    # Normal velocity
     FUN11 = inner(avg(eta_2),
                   dot(u_f('+') + kappa_0 * H('-') * grad(p_p('-')) - as_vector([U_0('-'), 0]), nn('-'))) * dS
 
-    # No total axial traction on the solid (ez . sigma_s . n = int_V f dV)
-    FUN6 = dot(ez, lam('+')) * V_0("-") * dS - f_body * V_0 * dx(solid)
+
+    # No total axial traction on the solid (ez . sigma_s . n = 0)
+    FUN6 = m * (U_0 - U_0_old) / dt * V_0 * dx(solid) - dot(ez, lam("+")) * V_0("-") * dS
+
+    delta = 1
+    # du_com/dt-u_0=0
+    FUN12 = delta * (inner((u_com - u_com_old) / dt, v_com) * dx(solid)
+            - inner(U_0 - U_0_old, v_com) * dx(solid))
 
     # ALE bulk equation
     FUN7 = (-inner(sigma_a, grad(v_a)) * dx(fluid)
@@ -413,14 +406,14 @@ for ii in range(1):
     # Continuity of fluid and solid displacement
     FUN8 = inner(avg(eta_a), u_a("+") - u_s("-")) * dS
 
-    # mean axial solid displacement is zero
-    FUN9 = dot(ez, u_s) * g_0 * dx(solid)
+    # link mean axial displacement to the U_0
+    FUN9 = (dot(ez, u_s) - u_com) * g_0 * dx(solid)
 
     # mean fluid pressure is zero
     FUN10 = p_f * eta_p * dx(fluid)
 
     # Combine equations and compute Jacobian
-    FUN = [FUN1, FUN2, FUN3, FUN4, FUN5, FUN6, FUN7, FUN8, FUN9, FUN10, FUN11]
+    FUN = [FUN1, FUN2, FUN3, FUN4, FUN5, FUN6, FUN7, FUN8, FUN9, FUN10, FUN11, FUN12]
     JAC = block_derivative(FUN, X, Xt)
 
     # ---------------------------------------------------------------------
@@ -433,7 +426,7 @@ for ii in range(1):
     solver.parameters.update(snes_solver_parameters["snes_solver"])
 
     # extract solution components
-    (u_f, p_f, u_s, p_p, f_0, U_0, lam, lam_2, lam_p, u_a, lam_a) = X.block_split()
+    (u_f, p_f, u_s, p_p, f_0, U_0, lam, lam_2, lam_p, u_a, lam_a, u_com) = X.block_split()
 
     # ---------------------------------------------------------------------
     # Set up code to save solid quanntities only on the solid domain and
@@ -461,18 +454,20 @@ for ii in range(1):
     u_f_only = Function(Vf)
     u_a_only = Function(Vf)
     u_s_only = Function(Vs)
+    u_vel_only = Function(Pp)
     p_f_only = Function(Pf)
     p_p_only = Function(Pp)
 
 
     # Python function to save solution for a given value
     # of epsilon
-    def save(eps):
+    def save(t):
         u_f_only = project(u_f - as_vector([U_0, 0]), Vf)
         u_a_only = project(u_a, Vf)
         u_s_only = project(u_s, Vs)
-        p_f_only = project(p_f, Pf)
+        u_vel_only = project(u_com, Pp)
         p_p_only = project(p_p, Pp)
+        p_f_only = project(p_f, Pf)
 
         MhP = BlockFunctionSpace([P1v], restrict=[Os])
         sig_s = project((A * Sigma_s_func(u_s, p_p, eps) * A.T) * as_vector([1, 0]), MhP.sub(0))
@@ -480,7 +475,6 @@ for ii in range(1):
         VhSD = VectorFunctionSpace(mesh_s, 'DG', 0)
         sigma_s_int = interpolate(sig_s, VhSD)
 
-        # total flux
         Q = project(darcy_flux(p_p), MhP.sub(0))
         VhQ = VectorFunctionSpace(mesh_s, 'DG', 0)
         Q_int = interpolate(Q, VhQ)
@@ -492,161 +486,60 @@ for ii in range(1):
         VhFD = VectorFunctionSpace(mesh_f, 'DG', 0)
         sigma_f_int = interpolate(sig_f, VhFD)
 
-
         u_f_only.rename("u_f", "u_f")
         p_f_only.rename("p_f", "p_f")
         u_a_only.rename("u_a", "u_a")
         u_s_only.rename("u_s", "u_s")
+        u_vel_only.rename("u_vel", "u_vel")
+        p_p_only.rename("p_p", "p_p")
         sigma_s_int.rename("sigma", "sigma")
         sigma_f_int.rename("sigma", "sigma")
-        p_p_only.rename("p_p", "p_p")
-        Q_int.rename("Q", "Q")
+        Q_int.rename("q", "q")
 
-        output_f.write(u_f_only, eps)
-        output_f.write(u_a_only, eps)
-        output_f.write(p_f_only, eps)
-        output_f.write(sigma_f_int, eps)
-        output_s.write(u_s_only, eps)
-        output_s.write(sigma_s_int, eps)
-        output_s.write(p_p_only, eps)
-        output_s.write(Q_int, eps)
+        output_f.write(u_f_only, t)
+        output_f.write(u_a_only, t)
+        output_f.write(p_f_only, t)
+        output_f.write(sigma_f_int, t)
+        output_s.write(u_s_only, t)
+        output_s.write(u_vel_only, t)
+        output_s.write(p_p_only, t)
+        output_s.write(sigma_s_int, t)
+        output_s.write(Q_int, t)
 
 
     # ---------------------------------------------------------------------
     # Solve
     # ---------------------------------------------------------------------
 
-    n = 0
+    for i in range(Nt):
 
-    # last converged value of epsilon
-    eps_conv = 0
-
-    # increment epsilon and solve
-    while eps_conv < eps_max:
-
-        print('-------------------------------------------------')
-        print(f'attempting to solve problem with eps = {float(eps):.4e}')
-
-        # make a prediction of the next solution based on how the solution
-        # changed over the last two increments, e.g. using a simple
-        # extrapolation formula
-        if n > 1:
-            X.block_vector()[:] = X_old.block_vector()[:] + (eps_try - eps_conv) * dX_deps
-
+        print('-------------------------------------------')
+        print('iteration', i + 1, 'of', Nt)
+        print('time', t_vec[i])
+        print('Fluid vel scale factor', td_func(t_vec[i]))
         (its, conv) = solver.solve()
 
-        # if the solver converged...
         if conv:
+            save(t_vec[i])
 
-            n += 1
-            # update value of eps_conv and save
-            eps_conv = float(eps)
-            save(eps_conv)
+            # update solid disp and vel
+            u_s_old.assign(u_s)
+            u_com_old.assign(u_com)
+            U_0_old.assign(U_0)
 
-            # update the value of epsilon to try to solve the problem with
-            eps_try += de
-
-            # copy the converged solution into old solution
-            block_assign(X_old, X)
-
-            # print some info to the screen
-            print('Axial force on the particle: f_0 =', f_0.vector()[0])
-            print('Translational speed of the particle: U_0 =', U_0.vector()[0])
+            # print some info
             print('Disp1 = ', u_s(0, rad)[1])
             print('Disp2 = ', u_s(rad, 0)[0])
-            print('Disp2 = ', u_s(-rad, 0)[0])
+            print('Solid vel = ', U_0.vector()[0])
+            print('Body force = ', f_0.vector()[0])
 
-            print('pressure ', p_p(-rad, 0))
 
-            print('lam ', lam(-rad, 0))
-            print('lam ', lam(0, rad))
-            print('lam_2 ', lam_2(-rad, 0))
-            print('lam_2 ', lam_2(0, rad))
+            t_vec[i + 1] = t_vec[i] + dt
+            t_d.assign(float(td_func(t_vec[i + 1])))
 
-            # approximate the derivative of the solution wrt epsilon
-            if n > 0:
-                dX_deps = (X.block_vector()[:] - X_old.block_vector()[:]) / de
+            i += 1
 
-        # if the solver diverged...
-        if not (conv):
-            # halve the increment in epsilon if not at smallest value
-            # and use the previously converged solution as the initial
-            # guess
-            if de > de_min:
-                de /= 2
-                eps_try = eps_conv + de
-                block_assign(X, X_old)
-            else:
-                print('min increment reached...aborting')
-                save(eps_try)
-                break
+        else:
+            print('NO CONVERGENCE')
+            break
 
-        # update the value of epsilon
-        eps.assign(eps_try)
-
-    print('-----------------------------------------------------')
-    print(f'Maximum eps reached {float(eps):.4e}, now increasing gamma')
-    g0_conv = 0
-    ng0 = 0
-    # now increment kappa and solve
-    while g0_conv < g0_max:
-
-        print('-------------------------------------------------')
-        print(f'attempting to solve problem with gamma = {float(gamma):.4e}')
-
-        # make a prediction of the next solution based on how the solution
-        # changed over the last two increments, e.g. using a simple
-        # extrapolation formula
-        if ng0 > 1:
-            X.block_vector()[:] = X_old.block_vector()[:] + (g0_try - g0_conv) * dX_dg0
-
-        (its, conv) = solver.solve()
-
-        # if the solver converged...
-        if conv:
-
-            ng0 += 1
-            # update value of eps_conv and save
-            g0_conv = float(gamma)
-            save(g0_conv)
-
-            # update the value of epsilon to try to solve the problem with
-            g0_try += dg0
-
-            # copy the converged solution into old solution
-            block_assign(X_old, X)
-
-            # print some info to the screen
-            print('Axial force on the particle: f_0 =', f_0.vector()[0])
-            print('Translational speed of the particle: U_0 =', U_0.vector()[0])
-            print('Disp1 = ', u_s(0, rad)[1])
-            print('Disp2 = ', u_s(rad, 0)[0])
-            print('Disp2 = ', u_s(-rad, 0)[0])
-
-            print('pressure ', p_p(-rad, 0))
-
-            print('lam ', lam(-rad, 0))
-            print('lam ', lam(0, rad))
-            print('lam_2 ', lam_2(-rad, 0))
-            print('lam_2 ', lam_2(0, rad))
-
-            # approximate the derivative of the solution wrt epsilon
-            if ng0 > 0:
-                dX_dg0 = (X.block_vector()[:] - X_old.block_vector()[:]) / dg0
-
-        # if the solver diverged...
-        if not (conv):
-            # halve the increment in epsilon if not at smallest value
-            # and use the previously converged solution as the initial
-            # guess
-            if dg0 > dg0_min:
-                dg0 /= 2
-                g0_try = g0_conv + dg0
-                block_assign(X, X_old)
-            else:
-                print('min increment reached for kappa ...aborting')
-                save(g0_try)
-                break
-
-        # update the value of gamma
-        gamma.assign(g0_try)

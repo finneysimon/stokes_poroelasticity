@@ -75,6 +75,10 @@ def get_mesh(rad):
     return mesh, subdomains, bdry
 
 
+def compute_force(u_f, p_f, u_a):
+    F = assemble(dot(ez, Sigma_f_func(u_f('+'), p_f('+'), u_a('+')) * nn('-')) * dS)
+    return F
+
 """
 Solver parameters
 """
@@ -100,11 +104,11 @@ for ii in range(1):
     """
 
     # the initial value of epsilon to try solving the problem with
-    eps_try = 0.005
+    eps_try = 0.000001
     eps = Constant(eps_try)
 
     # the max value of epsilon
-    eps_max = 0.4
+    eps_max = 0.5
 
     # the incremental increase in epsilon
     de = 0.005
@@ -113,25 +117,14 @@ for ii in range(1):
     de_min = 1e-3
     de_max = 1e-1
 
+    # initial guess for particle velocity
+    V_a = Constant(0.8)
+
     # physical parameters
-    lambda_s = 1  # lambda = 2*nu/(1-2*nu)
+    lambda_s = 1
     phi_f_0 = 1 - 0.5
-    k0_try = 1.e-2
-    kappa_0 = Constant(k0_try)
-    g0_try = 1.e0
-    gamma = Constant(g0_try)
-
-    # parameter continuation in kappa
-    dk0 = 1.e-3
-    k0_conv = 0
-    dk0_min = 1.e-5
-    k0_max = 1.e-2
-
-    # parameter continuation in gamma
-    dg0 = 1.
-    g0_conv = 0
-    dg0_min = 1.e-1
-    g0_max = 100
+    kappa_0 = 1.e-2
+    gamma = 1.e6
 
     # define the boundaries (values from the gmsh file)
     circle = 1
@@ -155,7 +148,7 @@ for ii in range(1):
     dS = dS(circle)
 
     # normal and tangent vectors
-    nn = FacetNormal(mesh);
+    nn = FacetNormal(mesh)
     tt = as_vector((-nn[1], nn[0]))
 
     ez = as_vector([1, 0])
@@ -204,16 +197,21 @@ for ii in range(1):
     displacement (ensures compatibility between fluid/solid domains)
 
     """
-    mixed_element = BlockElement(V2, P1, V2, P1, P0, P0, DGT, DGT_FE, P0, V2, DGT)
+    mixed_element = BlockElement(V2, P1, V2, P1, P0, DGT, DGT_FE, P0, V2, DGT)
     V = BlockFunctionSpace(mesh, mixed_element,
-                           restrict=[Of, Of, Os, Os, Os, Os, Sig, Sig, Of, Of, Sig])
+                           restrict=[Of, Of, Os, Os, Os, Sig, Sig, Of, Of, Sig])
+    # mixed_element = BlockElement(V2, P1, V2, P1, P0, P0, V2, DGT)
+    # V = BlockFunctionSpace(mesh, mixed_element,
+    #                        restrict=[Of, Of, Os, Os, Os, Of, Of, Sig])
 
     X = BlockFunction(V)
-    (u_f, p_f, u_s, p_p, f_0, U_0, lam, lam_2, lam_p, u_a, lam_a) = block_split(X)
+    (u_f, p_f, u_s, p_p, f_0, lam, lam_2, lam_p, u_a, lam_a) = block_split(X)
+    # (u_f, p_f, u_s, p_p, f_0, lam_p, u_a, lam_a) = block_split(X)
 
     # unknowns and test functions
     Y = BlockTestFunction(V)
-    (v_f, q_f, v_s, q_p, g_0, V_0, eta, eta_2, eta_p, v_a, eta_a) = block_split(Y)
+    (v_f, q_f, v_s, q_p, g_0, eta, eta_2, eta_p, v_a, eta_a) = block_split(Y)
+    # (v_f, q_f, v_s, q_p, g_0, eta_p, v_a, eta_a) = block_split(Y)
 
     Xt = BlockTrialFunction(V)
 
@@ -228,7 +226,7 @@ for ii in range(1):
     Physical boundary conditions
     """
     # Far-field fluid velocity
-    far_field = Expression(('(1 - x[1] * x[1]) * t', '0'), degree=0, t=1)  #  / 0.25
+    far_field = Expression(('(1 - x[1] * x[1] - V_a) *  t', '0'), degree=0, V_a=V_a, t=1)  #  / 0.25
 
     # impose the far-field fluid velocity upstream and downstream
     bc_inlet = DirichletBC(V.sub(0), far_field, bdry, inlet)
@@ -238,7 +236,8 @@ for ii in range(1):
     bc_fluid_axis = DirichletBC(V.sub(0).sub(1), Constant(0), bdry, fluid_axis)
 
     # impose no-slip and no-penetration at the channel wall
-    bc_wall = DirichletBC(V.sub(0), Constant((0, 0)), bdry, wall)
+    no_slip = Expression(('-V_a', '0'), degree=0, V_a=V_a)
+    bc_wall = DirichletBC(V.sub(0), no_slip, bdry, wall)
 
     # impose zero vertical solid displacement at the centreline axis
     bc_solid_axis = DirichletBC(V.sub(2).sub(1), Constant(0), bdry, solid_axis)
@@ -248,10 +247,14 @@ for ii in range(1):
     displacement.  These are no normal displacements
     """
     # incompressible
-    ac_inlet = DirichletBC(V.sub(9).sub(0), Constant((0)), bdry, inlet)
-    ac_outlet = DirichletBC(V.sub(9).sub(0), Constant((0)), bdry, outlet)
-    ac_fluid_axis = DirichletBC(V.sub(9).sub(1), Constant((0)), bdry, fluid_axis)
-    ac_wall = DirichletBC(V.sub(9).sub(1), Constant((0)), bdry, wall)
+    ac_inlet = DirichletBC(V.sub(8).sub(0), Constant((0)), bdry, inlet)
+    ac_outlet = DirichletBC(V.sub(8).sub(0), Constant((0)), bdry, outlet)
+    ac_fluid_axis = DirichletBC(V.sub(8).sub(1), Constant((0)), bdry, fluid_axis)
+    ac_wall = DirichletBC(V.sub(8).sub(1), Constant((0)), bdry, wall)
+    # ac_inlet = DirichletBC(V.sub(6).sub(0), Constant((0)), bdry, inlet)
+    # ac_outlet = DirichletBC(V.sub(6).sub(0), Constant((0)), bdry, outlet)
+    # ac_fluid_axis = DirichletBC(V.sub(6).sub(1), Constant((0)), bdry, fluid_axis)
+    # ac_wall = DirichletBC(V.sub(6).sub(1), Constant((0)), bdry, wall)
 
     # Combine all BCs together
     bcs = BlockDirichletBC(
@@ -285,7 +288,6 @@ for ii in range(1):
     # eul normal and tangent
     nn_eul = H * nn / sqrt(inner(H * nn, H * nn))
     TT_eul = I - outer(nn_eul, nn_eul)
-    tt_eul = F * tt / sqrt(inner(F * tt, F * tt))
 
 
     # functions for post-processing projections
@@ -300,10 +302,10 @@ for ii in range(1):
     def H_func(u_s):
         return inv(F_func(u_s).T)
 
-    # neo-Hookean - no darcy pressure
     def Sigma_s_func(u_s, p_p, eps):
         return (1 / eps * (F_func(u_s) - H_func(u_s))
-                + lambda_s / eps * (J_s_func(u_s) - 1) * J_s_func(u_s) * H_func(u_s))
+                + lambda_s / eps * (J_s_func(u_s) - 1) * J_s_func(u_s) * H_func(u_s)
+                - p_p * J_s_func(u_s) * H_func(u_s))
 
     # linear - no darcy pressure
     # def Sigma_s_func(u_s, p_p, eps):
@@ -358,6 +360,8 @@ for ii in range(1):
     # '-' solid, '+' fluid
     # Stokes equations for the fluid
     FUN1 = (-inner(Sigma_f, grad(v_f)) * dx(fluid)
+            # - dot(v_f('+'), J_s('-') * p_p('-') * H('-') * nn('-')
+            # + gamma * dot(u_f('+') + 1 / J_s('-') * F('-') * K('-') * grad(p_p('-')), TT_eul('-'))) * dS)
             + inner(lam("+"), v_f("+")) * dS)
 
     # Incompressibility for the fluid
@@ -368,7 +372,9 @@ for ii in range(1):
     # Nonlinear elasticity for the solid balancing with the Darcy pressure
     # compressible with Darcy pressure
     FUN3 = (-inner(Sigma_s, grad(v_s)) * dx(solid)
-            + inner(as_vector([f_0, 0]), v_s) * dx(solid)  # equilibrium condition
+            # + dot(v_s('+'), J_s('-') * p_p('-') * H('-') * nn('-')
+            # - gamma * dot(u_f('+') + 1 / J_s('-') * F('-') * K('-') * grad(p_p('-')), TT_eul('-'))) * dS
+            + inner(as_vector([f_0, 0]), v_s) * dx(solid)  # no z-disp condition
             - inner(lam("-"), v_s("-")) * dS)  # fluid traction balances with solid stress + darcy pressure
 
     # # Incompressibility condition
@@ -377,34 +383,24 @@ for ii in range(1):
     # div(Q + J F^-1 v_s) = 0, Q = -k J F^-1 F^-T grad(p_p)
     # conservation of mass for fluid and solid phases in particle
     FUN4 = (inner(K * grad(p_p), grad(q_p)) * dx(solid)
-            - inner(J_s * H.T * as_vector([U_0, 0]), grad(q_p)) * dx(solid)
+            # + dot(u_f('+'), nn_eul('-')) * q_p('-') * dS)
+            # - inner(J_s * H.T * as_vector([U_0, 0]), grad(q_p)) * dx(solid).
             + lam_2('+') * q_p('-') * dS)  # lam_2 = u.N
 
     # fluid flux continuity no slip q = -k * H * grad(p_p) + U_0 e_z
-    # FUN5 = inner(avg(eta), u_f('+') + kappa_0 * H('-') * grad(p_p('-')) - as_vector([U_0('-'), 0])) * dS
+    FUN5 = inner(avg(eta), u_f('+') + kappa_0 * H('-') * grad(p_p('-'))) * dS
 
     # fluid flux continuity (inc B&J condition - gamma not eq 0)
     # FUN5 = inner(avg(eta), u_f('+') + kappa_0 * H('-') * grad(p_p('-')) - as_vector([U_0('-'), 0])
-    #              - 1 / gamma * dot(Sigma_f('+') * nn('-'), TT_eul('-'))) * dS
+    #              - 1 / gamma / J_a('+') / sqrt(inner(H_a('+') * nn('-'), H_a('+') * nn('-')))
+    #              * dot(tt_eul('-'), Sigma_f('+') * nn('-')) * tt_eul('-')) * dS
 
-    # stress balance
-    # FUN5 = inner(avg(eta), lam('+') - J_s('-') * p_p('-') * dot(H('-'), nn('-'))) * dS
-
-    # stress balance - beavers and joseph (try gamma small for now)
-    FUN5 = (inner(avg(eta), lam('+') - J_s('-') * p_p('-') * dot(H('-'), nn('-'))
-                 + gamma * J_s('-') * sqrt(inner(H('-') * nn('-'), H('-') * nn('-')))
-                 * (u_f('+') + kappa_0 * H('-') * grad(p_p('-')) - as_vector([U_0('-'), 0]))) * dS)
-
-    # Darcy stress balances with normal Stokes stress n.lam = -p
-    # FUN11 = inner(avg(eta_2), -J_s('-') * sqrt(inner(H('-') * nn('-'), H('-') * nn('-'))) * p_p('-')
-    #               + dot(nn_eul('-'), lam('+'))) * dS
-
-    # Vel continuity
-    FUN11 = inner(avg(eta_2),
-                  dot(u_f('+') + kappa_0 * H('-') * grad(p_p('-')) - as_vector([U_0('-'), 0]), nn('-'))) * dS
+    # Darcy stress balances with normal Stokes stress
+    FUN11 = inner(avg(eta_2), -J_s('-') * sqrt(inner(H('-') * nn('-'), H('-') * nn('-'))) * p_p('-')
+                  + dot(nn_eul('-'), lam('+'))) * dS
 
     # No total axial traction on the solid (ez . sigma_s . n = int_V f dV)
-    FUN6 = dot(ez, lam('+')) * V_0("-") * dS - f_body * V_0 * dx(solid)
+    # FUN6 = dot(ez, lam('+')) * V_0("-") * dS - f_body * V_0 * dx(solid)
 
     # ALE bulk equation
     FUN7 = (-inner(sigma_a, grad(v_a)) * dx(fluid)
@@ -420,7 +416,8 @@ for ii in range(1):
     FUN10 = p_f * eta_p * dx(fluid)
 
     # Combine equations and compute Jacobian
-    FUN = [FUN1, FUN2, FUN3, FUN4, FUN5, FUN6, FUN7, FUN8, FUN9, FUN10, FUN11]
+    FUN = [FUN1, FUN2, FUN3, FUN4, FUN5, FUN7, FUN8, FUN9, FUN10, FUN11]
+    # FUN = [FUN1, FUN2, FUN3, FUN4, FUN7, FUN8, FUN9, FUN10]
     JAC = block_derivative(FUN, X, Xt)
 
     # ---------------------------------------------------------------------
@@ -433,7 +430,8 @@ for ii in range(1):
     solver.parameters.update(snes_solver_parameters["snes_solver"])
 
     # extract solution components
-    (u_f, p_f, u_s, p_p, f_0, U_0, lam, lam_2, lam_p, u_a, lam_a) = X.block_split()
+    (u_f, p_f, u_s, p_p, f_0, lam, lam_2, lam_p, u_a, lam_a) = X.block_split()
+    # (u_f, p_f, u_s, p_p, f_0, lam_p, u_a, lam_a) = X.block_split()
 
     # ---------------------------------------------------------------------
     # Set up code to save solid quanntities only on the solid domain and
@@ -468,7 +466,7 @@ for ii in range(1):
     # Python function to save solution for a given value
     # of epsilon
     def save(eps):
-        u_f_only = project(u_f - as_vector([U_0, 0]), Vf)
+        u_f_only = project(u_f, Vf)
         u_a_only = project(u_a, Vf)
         u_s_only = project(u_s, Vs)
         p_f_only = project(p_f, Pf)
@@ -494,7 +492,6 @@ for ii in range(1):
 
 
         u_f_only.rename("u_f", "u_f")
-        p_f_only.rename("p_f", "p_f")
         u_a_only.rename("u_a", "u_a")
         u_s_only.rename("u_s", "u_s")
         sigma_s_int.rename("sigma", "sigma")
@@ -533,11 +530,48 @@ for ii in range(1):
         if n > 1:
             X.block_vector()[:] = X_old.block_vector()[:] + (eps_try - eps_conv) * dX_deps
 
+        # Solve with the initial value of V_a
+        V_0 = float(V_a)
+        print(f'trying V_a = {float(V_a):.4e}')
         (its, conv) = solver.solve()
+        if not solve:
+            print(f'solver not converged with V_a = {float(V_a):.4e}')
+            break
+        F_0 = compute_force(u_f, p_f, u_a)
+        print(f'required pinning force F_1 = {float(F_0):.4e}')
+
+        # Solve with a second guess of V_a
+        V_1 = V_0 + de
+        V_a.assign(V_1)
+        print(f'trying V_a = {float(V_a):.4e}')
+        (its, conv) = solver.solve()
+        if not conv:
+            print(f'solver not converged with V_a = {float(V_a):.4e}')
+            break
+        F_1 = compute_force(u_f, p_f, u_a)
+        print(f'required pinning force F_1 = {float(F_1):.4e}')
+
+        # iterate according to the secant method
+        while abs(F_1) > 1e-5:
+
+            dFdV = (F_1 - F_0) / (V_1 - V_0)
+            V_new = V_1 - F_1 / dFdV
+
+            V_0 = V_1
+            F_0 = F_1
+
+            V_1 = V_new
+            V_a.assign(V_1)
+            print(f'trying V_a = {float(V_a):.4e}')
+            (its, conv) = solver.solve()
+            if not conv:
+                print(f'solver not converged with V_a = {float(V_a):.4e}')
+                break
+            F_1 = compute_force(u_f, p_f, u_a)
+            print(f'required pinning force F_1 = {float(F_1):.4e}')
 
         # if the solver converged...
         if conv:
-
             n += 1
             # update value of eps_conv and save
             eps_conv = float(eps)
@@ -550,18 +584,9 @@ for ii in range(1):
             block_assign(X_old, X)
 
             # print some info to the screen
-            print('Axial force on the particle: f_0 =', f_0.vector()[0])
-            print('Translational speed of the particle: U_0 =', U_0.vector()[0])
-            print('Disp1 = ', u_s(0, rad)[1])
-            print('Disp2 = ', u_s(rad, 0)[0])
-            print('Disp2 = ', u_s(-rad, 0)[0])
-
-            print('pressure ', p_p(-rad, 0))
-
-            print('lam ', lam(-rad, 0))
-            print('lam ', lam(0, rad))
-            print('lam_2 ', lam_2(-rad, 0))
-            print('lam_2 ', lam_2(0, rad))
+            print('Lagrange multiplier for z-disp: f_0 =', f_0.vector()[0])
+            print('Axial force on the particle: F_1 =', F_1)
+            print(f'calculated equilibrium velocity: V_a = {float(V_a):.4e}')
 
             # approximate the derivative of the solution wrt epsilon
             if n > 0:
@@ -583,70 +608,3 @@ for ii in range(1):
 
         # update the value of epsilon
         eps.assign(eps_try)
-
-    print('-----------------------------------------------------')
-    print(f'Maximum eps reached {float(eps):.4e}, now increasing gamma')
-    g0_conv = 0
-    ng0 = 0
-    # now increment kappa and solve
-    while g0_conv < g0_max:
-
-        print('-------------------------------------------------')
-        print(f'attempting to solve problem with gamma = {float(gamma):.4e}')
-
-        # make a prediction of the next solution based on how the solution
-        # changed over the last two increments, e.g. using a simple
-        # extrapolation formula
-        if ng0 > 1:
-            X.block_vector()[:] = X_old.block_vector()[:] + (g0_try - g0_conv) * dX_dg0
-
-        (its, conv) = solver.solve()
-
-        # if the solver converged...
-        if conv:
-
-            ng0 += 1
-            # update value of eps_conv and save
-            g0_conv = float(gamma)
-            save(g0_conv)
-
-            # update the value of epsilon to try to solve the problem with
-            g0_try += dg0
-
-            # copy the converged solution into old solution
-            block_assign(X_old, X)
-
-            # print some info to the screen
-            print('Axial force on the particle: f_0 =', f_0.vector()[0])
-            print('Translational speed of the particle: U_0 =', U_0.vector()[0])
-            print('Disp1 = ', u_s(0, rad)[1])
-            print('Disp2 = ', u_s(rad, 0)[0])
-            print('Disp2 = ', u_s(-rad, 0)[0])
-
-            print('pressure ', p_p(-rad, 0))
-
-            print('lam ', lam(-rad, 0))
-            print('lam ', lam(0, rad))
-            print('lam_2 ', lam_2(-rad, 0))
-            print('lam_2 ', lam_2(0, rad))
-
-            # approximate the derivative of the solution wrt epsilon
-            if ng0 > 0:
-                dX_dg0 = (X.block_vector()[:] - X_old.block_vector()[:]) / dg0
-
-        # if the solver diverged...
-        if not (conv):
-            # halve the increment in epsilon if not at smallest value
-            # and use the previously converged solution as the initial
-            # guess
-            if dg0 > dg0_min:
-                dg0 /= 2
-                g0_try = g0_conv + dg0
-                block_assign(X, X_old)
-            else:
-                print('min increment reached for kappa ...aborting')
-                save(g0_try)
-                break
-
-        # update the value of gamma
-        gamma.assign(g0_try)
