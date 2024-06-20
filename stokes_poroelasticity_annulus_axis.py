@@ -1,6 +1,6 @@
 """
 This is a monolithic solver for pressure-driven flow around a
-poroelastic particle. Axisymmetric version.
+poroelastic particle.
 
 The problem is formulated using the ALE
 method, which maps the deformed geometry to the initial
@@ -42,6 +42,8 @@ def write_list_as_row(file_name, list_of_elem):
         csv_writer = writer(write_obj)
         csv_writer.writerow(list_of_elem)
 
+def diva(vec, r):
+    return div(vec) + vec[1] / r
 
 # ---------------------------------------------------------------------
 # Setting up file names and paramerers
@@ -50,28 +52,31 @@ def write_list_as_row(file_name, list_of_elem):
 dir = '/home/simon/data/fenics/stokes_poroelasticity_axis/'
 
 
-def diva(vec, r):
-    return div(vec) + vec[1] / r
-
-def generate_output_files(rad):
+def generate_output_files(rad_out, rad_in):
     output_s = XDMFFile(dir + "poro_2d_solid_0-"
-                        + str(float('%.2g' % rad))[2:] + ".xdmf")
+                        + str(float('%.2g' % rad_out))[2:] + "_" + str(float('%.2g' % rad_in))[2:] + ".xdmf")
     output_s.parameters['rewrite_function_mesh'] = False
     output_s.parameters["functions_share_mesh"] = True
     output_s.parameters["flush_output"] = True
 
     output_f = XDMFFile(dir + "poro_2d_fluid_0-"
-                        + str(float('%.2g' % rad))[2:] + ".xdmf")
+                        + str(float('%.2g' % rad_out))[2:] + "_" + str(float('%.2g' % rad_in))[2:] + ".xdmf")
     output_f.parameters['rewrite_function_mesh'] = False
     output_f.parameters["functions_share_mesh"] = True
     output_f.parameters["flush_output"] = True
 
-    return output_s, output_f
+    output_c = XDMFFile(dir + "poro_2d_cell_0-"
+                        + str(float('%.2g' % rad_out))[2:] + "_" + str(float('%.2g' % rad_in))[2:] + ".xdmf")
+    output_c.parameters['rewrite_function_mesh'] = False
+    output_c.parameters["functions_share_mesh"] = True
+    output_c.parameters["flush_output"] = True
+
+    return output_s, output_f, output_c
 
 
-def get_mesh(rad):
-    meshname = 'channel_sphere_' + str(float('%.1g' % rad))[2:]
-    # meshname = 'channel_sphere'
+def get_mesh(rad_out, rad_in):
+    meshname = 'channel_annulus_' + str(float('%.1g' % rad_out))[2:] + "_" + str(float('%.1g' % rad_in))[2:]
+    print(meshname)
     mesh = Mesh('mesh/' + meshname + '.xml')
     subdomains = MeshFunction("size_t", mesh, 'mesh/' + meshname + '_physical_region.xml')
     bdry = MeshFunction("size_t", mesh, 'mesh/'
@@ -91,13 +96,14 @@ snes_solver_parameters = {"snes_solver": {"linear_solver": "mumps",
 parameters["ghost_mode"] = "shared_facet"
 
 for ii in range(1):
-    rad = (ii + 6) / 10
-    print("doing rad = ", rad)
+    rad_out = (ii + 6) / 10
+    rad_in = 3 / 10
+    print("doing radii = ", rad_out, " ", rad_in)
 
-    output_s, output_f = generate_output_files(rad)
+    output_s, output_f, output_c = generate_output_files(rad_out, rad_in)
 
     # mesh has been created with Gmsh
-    mesh, subdomains, bdry = get_mesh(rad)
+    mesh, subdomains, bdry = get_mesh(rad_out, rad_in)
 
     """
         Physical parameters
@@ -108,7 +114,7 @@ for ii in range(1):
     eps = Constant(eps_try)
 
     # the max value of epsilon
-    eps_max = 0.005
+    eps_max = 0.15
 
     # the incremental increase in epsilon
     de = 0.005
@@ -122,7 +128,7 @@ for ii in range(1):
     phi_f_0 = 1 - 0.5
     k0_try = 1.e-2
     kappa_0 = Constant(k0_try)
-    g0_try = 1.e2
+    g0_try = 1.
     gamma = Constant(g0_try)
 
     # parameter continuation in kappa
@@ -138,25 +144,31 @@ for ii in range(1):
     g0_max = 100
 
     # define the boundaries (values from the gmsh file)
-    circle = 1
+    circle_outer = 1
     fluid_axis = 2
     inlet = 3
     outlet = 4
     wall = 5
     solid_axis = 6
+    circle_inner = 7
+    cell_axis = 8
 
     # define the domains
     fluid = 10
     solid = 11
+    cell = 12
 
     Of = generate_subdomain_restriction(mesh, subdomains, fluid)
     Os = generate_subdomain_restriction(mesh, subdomains, solid)
-    Sig = generate_interface_restriction(mesh, subdomains, {fluid, solid})
+    Oc = generate_subdomain_restriction(mesh, subdomains, cell)
+    Sig_1 = generate_interface_restriction(mesh, subdomains, {fluid, solid})
+    Sig_0 = generate_interface_restriction(mesh, subdomains, {solid, cell})
 
     dx = Measure("dx", domain=mesh, subdomain_data=subdomains)
     ds = Measure("ds", domain=mesh, subdomain_data=bdry)
     dS = Measure("dS", domain=mesh, subdomain_data=bdry)
-    dS = dS(circle)
+    dS1 = dS(circle_outer)
+    dS0 = dS(circle_inner)
 
     # normal and tangent vectors
     nn = FacetNormal(mesh);
@@ -174,8 +186,6 @@ for ii in range(1):
     # ---------------------------------------------------------------------
     V2 = VectorElement("CG", mesh.ufl_cell(), 2)
     P1 = FiniteElement("CG", mesh.ufl_cell(), 1)
-    # P2 = FiniteElement("CG", mesh.ufl_cell(), 2)
-    # DGT = VectorElement("DGT", mesh.ufl_cell(), 1)
     DGT = VectorElement("CG", mesh.ufl_cell(), 1)
     DGT_FE = FiniteElement("CG", mesh.ufl_cell(), 1)
     P0 = FiniteElement("R", mesh.ufl_cell(), 0)
@@ -207,17 +217,27 @@ for ii in range(1):
     lam_a: Lagrange multiplier to ensure continuity of fluid and solid
     displacement (ensures compatibility between fluid/solid domains)
 
+    u_c: ALE displacement for cell
+
+    p_c: cell pressure - used as lagrange multiplier to fix cell volume
+
+    lam_c: displacement continuity on cell surface
+
+    lam_3: lagrange multiplier corresponding to solid traction on inner surface
+
+    lam_4: lagrange multiplier for normal velocity - should equal zero 
+
     """
-    mixed_element = BlockElement(V2, P1, V2, P1, P0, P0, DGT, DGT_FE, P0, V2, DGT)
+    mixed_element = BlockElement(V2, P1, V2, P1, P0, P0, DGT, DGT_FE, P0, V2, DGT, V2, P0, DGT, DGT, DGT_FE)
     V = BlockFunctionSpace(mesh, mixed_element,
-                           restrict=[Of, Of, Os, Os, Os, Os, Sig, Sig, Of, Of, Sig])
+                           restrict=[Of, Of, Os, Os, Os, Os, Sig_1, Sig_1, Of, Of, Sig_1, Oc, Oc, Sig_0, Sig_0, Sig_0])
 
     X = BlockFunction(V)
-    (u_f, p_f, u_s, p_p, f_0, U_0, lam, lam_2, lam_p, u_a, lam_a) = block_split(X)
+    (u_f, p_f, u_s, p_p, f_0, U_0, lam, lam_2, lam_p, u_a, lam_a, u_c, p_c, lam_c, lam_3, lam_4) = block_split(X)
 
     # unknowns and test functions
     Y = BlockTestFunction(V)
-    (v_f, q_f, v_s, q_p, g_0, V_0, eta, eta_2, eta_p, v_a, eta_a) = block_split(Y)
+    (v_f, q_f, v_s, q_p, g_0, V_0, eta, eta_2, eta_p, v_a, eta_a, v_c, q_c, eta_c, eta_3, eta_4) = block_split(Y)
 
     Xt = BlockTrialFunction(V)
 
@@ -251,16 +271,16 @@ for ii in range(1):
     Boundary conditions for the ALE problem for fluid 
     displacement.  These are no normal displacements
     """
-    # incompressible
-    ac_inlet = DirichletBC(V.sub(9).sub(0), Constant((0)), bdry, inlet)
-    ac_outlet = DirichletBC(V.sub(9).sub(0), Constant((0)), bdry, outlet)
-    ac_fluid_axis = DirichletBC(V.sub(9).sub(1), Constant((0)), bdry, fluid_axis)
-    ac_wall = DirichletBC(V.sub(9).sub(1), Constant((0)), bdry, wall)
+    ac_inlet = DirichletBC(V.sub(9).sub(0), Constant(0), bdry, inlet)
+    ac_outlet = DirichletBC(V.sub(9).sub(0), Constant(0), bdry, outlet)
+    ac_fluid_axis = DirichletBC(V.sub(9).sub(1), Constant(0), bdry, fluid_axis)
+    ac_wall = DirichletBC(V.sub(9).sub(1), Constant(0), bdry, wall)
+    ac_cell = DirichletBC(V.sub(11).sub(1), Constant(0), bdry, cell_axis)
 
     # Combine all BCs together
     bcs = BlockDirichletBC(
         [bc_inlet, bc_outlet, bc_fluid_axis, bc_wall, bc_solid_axis,
-         ac_inlet, ac_outlet, ac_fluid_axis, ac_wall])
+         ac_inlet, ac_outlet, ac_fluid_axis, ac_wall, ac_cell])
 
     # ---------------------------------------------------------------------
     # Define the model
@@ -285,12 +305,6 @@ for ii in range(1):
 
     # Permeability tensor
     K = kappa_0 * J_s * inv(F.T * F)
-
-    # eul normal and tangent
-    # nn_eul = H * nn / sqrt(inner(H * nn, H * nn))
-    # TT_eul = I - outer(nn_eul, nn_eul)
-    # tt_eul = F * tt / sqrt(inner(F * tt, F * tt))
-
 
     # functions for post-processing projections
     def F_func(u_s):
@@ -358,15 +372,31 @@ for ii in range(1):
     # E_a = 0.5 * (F_a.T * F_a - I)
     # sigma_a = F_a * (nu_a / (1 + nu_a) / (1 - 2 * nu_a) * tr(E_a) * I + 1 / (1 + nu_a) * E_a)
 
+    ############### ALE method for the cell
+    # Deformation gradient for the cell
+    F_c = I + grad(u_c)
+    H_c = inv(F_c.T)
+    J_c = det(F_c) * (1 + u_c[1] / r)
+    ic_c = J_c - 1
+
+    # Laplace
+    sigma_c = grad(u_c)
+
+    # linear elasticity
+    # nu_c = Constant(0.1)
+    # E_c = 0.5 * (grad(u_c) + grad(u_c).T)
+    # sigma_c = nu_c / (1 + nu_c) / (1 - 2 * nu_c) * diva(u_c, r) * I + 1 / (1 + nu_c) * E_c
+
     # ---------------------------------------------------------------------
     # build equations
     # ---------------------------------------------------------------------
 
-    # '-' solid, '+' fluid
+    # '-' solid, '+' fluid on dS1
+    # '-' cell, '+' solid on dS0
     # Stokes equations for the fluid
     FUN1 = (-inner(Sigma_f, grad(v_f)) * r * dx(fluid)
             - J_a * (2 * u_f[1] * v_f[1] / (r + u_a[1]) ** 2 - p_f * v_f[1] / (r + u_a[1])) * r * dx(fluid)
-            + inner(lam("+"), v_f("+")) * r('+') * dS)
+            + inner(lam("+"), v_f("+")) * r('+') * dS1)
 
     # Incompressibility for the fluid
     FUN2 = (ic_f * q_f * r * dx(fluid)
@@ -380,37 +410,36 @@ for ii in range(1):
             - 1 / eps * (1 + u_s[1] / r) * v_s[1] * dx(solid)
             + (1 / eps - lambda_s / eps * (J_s - 1) * J_s + J_s * p_p) * v_s[1] * r / (r + u_s[1]) * dx(solid)
             + inner(as_vector([f_0, 0]), v_s) * r * dx(solid)  # equilibrium condition
-            - inner(lam("-"), v_s("-")) * r('+') * dS)  # fluid traction balances with solid stress + darcy pressure
+            - inner(lam("-"), v_s("-")) * r('+') * dS1  # lam = Sig.N on dS1
+            + inner(lam_3('+'), v_s('+')) * r('+') * dS0)  # lam_3 = Sig.N on dS0
 
     # div(Q + J F^-1 v_s) = 0, Q = -k J F^-1 F^-T grad(p_p)
     # conservation of mass for fluid and solid phases in particle
     FUN4 = (inner(K * grad(p_p), grad(q_p)) * r * dx(solid)
             - inner(J_s * H.T * as_vector([U_0, 0]), grad(q_p)) * r * dx(solid)
-            + lam_2('+') * q_p('-') * r('+') * dS)  # lam_2 = u.N
-
-    # stress balance
-    # FUN5 = inner(avg(eta), lam('+') - J_s('-') * p_p('-') * dot(H('-'), nn('-'))) * dS
+            + lam_2('+') * q_p('-') * r('+') * dS1  # lam_2 = u.N on dS1
+            - lam_4('-') * q_p('+') * r('+') * dS0)  # lam_3 = u.N on dS0
 
     # stress balance - beavers and joseph (try gamma small for now)
     FUN5 = (inner(avg(eta), lam('+') - J_s('-') * p_p('-') * dot(H('-'), nn('-'))
                   + gamma * J_s('-') * sqrt(inner(H('-') * nn('-'), H('-') * nn('-')))
-                  * (u_f('+') + kappa_0 * H('-') * grad(p_p('-')) - as_vector([U_0('-'), 0]))) * r('+') * dS)
+                  * (u_f('+') + kappa_0 * H('-') * grad(p_p('-')) - as_vector([U_0('-'), 0]))) * r('+') * dS1)
 
     # Vel continuity
     FUN11 = inner(avg(eta_2),
-                  dot(u_f('+') + kappa_0 * H('-') * grad(p_p('-')) - as_vector([U_0('-'), 0]), nn('-'))) * r('+') * dS
+                  dot(u_f('+') + kappa_0 * H('-') * grad(p_p('-')) - as_vector([U_0('-'), 0]), nn('-'))) * r('+') * dS1
 
     # No total axial traction on the solid (ez . sigma_s . n = int_V f dV)
-    FUN6 = dot(ez, lam('+')) * V_0("-") * r('+') * dS - f_body * V_0 * r * dx(solid)
+    FUN6 = dot(ez, lam('+')) * V_0("-") * r('+') * dS1 - f_body * V_0 * r * dx(solid)
 
     # ALE bulk equation
     FUN7 = (-inner(sigma_a, grad(v_a)) * r * dx(fluid)
             - 1 / (1 + nu_a) * u_a[1] * v_a[1] / r * dx(fluid)
             - nu_a / (1 + nu_a) / (1 - 2 * nu_a) * diva(u_a, r) * v_a[1] * dx(fluid)
-            + inner(lam_a("+"), v_a("+")) * r('+') * dS)
+            + inner(lam_a("+"), v_a("+")) * r('+') * dS1)
 
-    # Continuity of fluid and solid displacement
-    FUN8 = inner(avg(eta_a), u_a("+") - u_s("-")) * r('+') * dS
+    # Continuity of fluid and solid displacement - outer
+    FUN8 = inner(avg(eta_a), u_a("+") - u_s("-")) * r('+') * dS1
 
     # mean axial solid displacement is zero
     FUN9 = dot(ez, u_s) * g_0 * r * dx(solid)
@@ -418,8 +447,25 @@ for ii in range(1):
     # mean fluid pressure is zero
     FUN10 = p_f * eta_p * r * dx(fluid)
 
+    # ALE bulk equation - cell
+    FUN12 = (-inner(sigma_c, grad(v_c)) * r * dx(cell)
+             - u_c[1] * v_c[1] / r * dx(fluid)
+             + inner(lam_c("-"), v_c("-")) * r('+') * dS0)
+
+    # Continuity of fluid and solid displacement - inner
+    FUN13 = inner(avg(eta_c), u_c("-") - u_s("+")) * r('+') * dS0
+
+    FUN14 = ic_c * q_c * r * dx(cell)
+
+    # stress balance - inner
+    FUN15 = inner(avg(eta_3), lam_3('+') - J_c('-') * p_c('-') * dot(H_c('-'), nn('-'))) * r('+') * dS0
+
+    # no normal flux
+    FUN16 = inner(avg(eta_4),
+                  dot(kappa_0 * H('+') * grad(p_p('+')), nn('-'))) * r('+') * dS0
+
     # Combine equations and compute Jacobian
-    FUN = [FUN1, FUN2, FUN3, FUN4, FUN5, FUN6, FUN7, FUN8, FUN9, FUN10, FUN11]
+    FUN = [FUN1, FUN2, FUN3, FUN4, FUN5, FUN6, FUN7, FUN8, FUN9, FUN10, FUN11, FUN12, FUN13, FUN14, FUN15, FUN16]
     JAC = block_derivative(FUN, X, Xt)
 
     # ---------------------------------------------------------------------
@@ -432,7 +478,7 @@ for ii in range(1):
     solver.parameters.update(snes_solver_parameters["snes_solver"])
 
     # extract solution components
-    (u_f, p_f, u_s, p_p, f_0, U_0, lam, lam_2, lam_p, u_a, lam_a) = X.block_split()
+    (u_f, p_f, u_s, p_p, f_0, U_0, lam, lam_2, lam_p, u_a, lam_a, u_c, p_c, lam_c, lam_3, lam_4) = X.block_split()
 
     # ---------------------------------------------------------------------
     # Set up code to save solid quanntities only on the solid domain and
@@ -444,12 +490,15 @@ for ii in range(1):
     """
     mesh_f = SubMesh(mesh, subdomains, fluid)
     mesh_s = SubMesh(mesh, subdomains, solid)
+    mesh_c = SubMesh(mesh, subdomains, cell)
 
     # Create function spaces for the velocity and displacement
     Vf = VectorFunctionSpace(mesh_f, "CG", 1)
     Pf = FunctionSpace(mesh_f, "CG", 1)
     Vs = VectorFunctionSpace(mesh_s, "CG", 1)
     Pp = FunctionSpace(mesh_s, "CG", 1)
+    Vc = VectorFunctionSpace(mesh_c, "CG", 1)
+    Pc = FunctionSpace(mesh_c, "DG", 0)
     P1v = VectorFunctionSpace(mesh, "DG", 1)
 
     # oonvert to polar coordinates
@@ -462,6 +511,8 @@ for ii in range(1):
     u_s_only = Function(Vs)
     p_f_only = Function(Pf)
     p_p_only = Function(Pp)
+    u_c_only = Function(Vc)
+    p_c_only = Function(Pc)
 
 
     # Python function to save solution for a given value
@@ -472,6 +523,8 @@ for ii in range(1):
         u_s_only = project(u_s, Vs)
         p_f_only = project(p_f, Pf)
         p_p_only = project(p_p, Pp)
+        u_c_only = project(u_c, Vc)
+        p_c_only = project(p_c, Pc)
 
         MhP = BlockFunctionSpace([P1v], restrict=[Os])
         sig_s = project((A * Sigma_s_func(u_s, p_p, eps) * A.T) * as_vector([1, 0]), MhP.sub(0))
@@ -499,6 +552,8 @@ for ii in range(1):
         sigma_f_int.rename("sigma", "sigma")
         p_p_only.rename("p_p", "p_p")
         Q_int.rename("Q", "Q")
+        u_c_only.rename("u_c", "u_c")
+        p_c_only.rename("p_c", "p_c")
 
         output_f.write(u_f_only, eps)
         output_f.write(u_a_only, eps)
@@ -508,6 +563,8 @@ for ii in range(1):
         output_s.write(sigma_s_int, eps)
         output_s.write(p_p_only, eps)
         output_s.write(Q_int, eps)
+        output_c.write(u_c_only, eps)
+        output_c.write(p_c_only, eps)
 
 
     # ---------------------------------------------------------------------
@@ -550,16 +607,12 @@ for ii in range(1):
             # print some info to the screen
             print('Axial force on the particle: f_0 =', f_0.vector()[0])
             print('Translational speed of the particle: U_0 =', U_0.vector()[0])
-            print('Disp1 = ', u_s(0, rad)[1])
-            print('Disp2 = ', u_s(rad, 0)[0])
-            print('Disp2 = ', u_s(-rad, 0)[0])
-
-            print('pressure ', p_p(-rad, 0))
-
-            print('lam ', lam(-rad, 0))
-            print('lam ', lam(0, rad))
-            print('lam_2 ', lam_2(-rad, 0))
-            print('lam_2 ', lam_2(0, rad))
+            print('Disp1 = ', u_s(0, rad_out)[1])
+            print('Disp2 = ', u_s(rad_out, 0)[0])
+            print('Disp2 = ', u_s(-rad_out, 0)[0])
+            print('pressure ', p_p(-rad_out, 0))
+            print('cell pressure ', p_c.vector()[0])
+            print('volume change', assemble((J_c - 1) * r * dx(cell)))
 
             # approximate the derivative of the solution wrt epsilon
             if n > 0:
@@ -617,16 +670,11 @@ for ii in range(1):
             # print some info to the screen
             print('Axial force on the particle: f_0 =', f_0.vector()[0])
             print('Translational speed of the particle: U_0 =', U_0.vector()[0])
-            print('Disp1 = ', u_s(0, rad)[1])
-            print('Disp2 = ', u_s(rad, 0)[0])
-            print('Disp2 = ', u_s(-rad, 0)[0])
-
-            print('pressure ', p_p(-rad, 0))
-
-            print('lam ', lam(-rad, 0))
-            print('lam ', lam(0, rad))
-            print('lam_2 ', lam_2(-rad, 0))
-            print('lam_2 ', lam_2(0, rad))
+            print('Disp1 = ', u_s(0, rad_out)[1])
+            print('Disp2 = ', u_s(rad_out, 0)[0])
+            print('Disp2 = ', u_s(-rad_out, 0)[0])
+            print('pressure ', p_p(-rad_out, 0))
+            print('cell pressure ', p_c.vector()[0])
 
             # approximate the derivative of the solution wrt epsilon
             if ng0 > 0:

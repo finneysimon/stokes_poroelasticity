@@ -306,9 +306,9 @@ for ii in range(1):
     K = kappa_0 * J_s * inv(F.T * F)
 
     # eul normal and tangent
-    nn_eul = H * nn / sqrt(inner(H * nn, H * nn))
-    TT_eul = I - outer(nn_eul, nn_eul)
-    tt_eul = F * tt / sqrt(inner(F * tt, F * tt))
+    # nn_eul = H * nn / sqrt(inner(H * nn, H * nn))
+    # TT_eul = I - outer(nn_eul, nn_eul)
+    # tt_eul = F * tt / sqrt(inner(F * tt, F * tt))
 
 
     # functions for post-processing projections
@@ -382,12 +382,15 @@ for ii in range(1):
     F_c = I + grad(u_c)
     H_c = inv(F_c.T)
     J_c = det(F_c)
-    # ic_c = J_c - 1
+    ic_c = J_c - 1
+
+    # Laplace
+    sigma_c = grad(u_c)
 
     # linear elasticity
-    nu_c = Constant(0.1)
-    E_c = 0.5 * (grad(u_c) + grad(u_c).T)
-    sigma_c = nu_c / (1 + nu_c) / (1 - 2 * nu_c) * div(u_c) * I + 1 / (1 + nu_c) * E_c
+    # nu_c = Constant(0.1)
+    # E_c = 0.5 * (grad(u_c) + grad(u_c).T)
+    # sigma_c = nu_c / (1 + nu_c) / (1 - 2 * nu_c) * div(u_c) * I + 1 / (1 + nu_c) * E_c
 
     # ---------------------------------------------------------------------
     # build equations
@@ -409,6 +412,7 @@ for ii in range(1):
     FUN3 = (-inner(Sigma_s, grad(v_s)) * dx(solid)
             + inner(as_vector([f_0, 0]), v_s) * dx(solid)  # equilibrium condition
             - inner(lam("-"), v_s("-")) * dS1  # lam = Sig.N on dS1
+            # + inner(J_c('-') * p_c('-') * dot(H_c('-'), nn('-')), v_s('+')) * dS0)
             + inner(lam_3('+'), v_s('+')) * dS0)  # lam_3 = Sig.N on dS0
 
     # div(Q + J F^-1 v_s) = 0, Q = -k J F^-1 F^-T grad(p_p)
@@ -422,10 +426,6 @@ for ii in range(1):
     FUN5 = (inner(avg(eta), lam('+') - J_s('-') * p_p('-') * dot(H('-'), nn('-'))
                   + gamma * J_s('-') * sqrt(inner(H('-') * nn('-'), H('-') * nn('-')))
                   * (u_f('+') + kappa_0 * H('-') * grad(p_p('-')) - as_vector([U_0('-'), 0]))) * dS1)
-
-    # Darcy stress balances with normal Stokes stress n.lam = -p
-    # FUN11 = inner(avg(eta_2), -J_s('-') * sqrt(inner(H('-') * nn('-'), H('-') * nn('-'))) * p_p('-')
-    #               + dot(nn_eul('-'), lam('+'))) * dS
 
     # Vel continuity
     FUN11 = inner(avg(eta_2),
@@ -454,8 +454,7 @@ for ii in range(1):
     # Continuity of fluid and solid displacement - inner
     FUN13 = inner(avg(eta_c), u_c("-") - u_s("+")) * dS0
 
-    # FUN14 = ic_c * q_c * dx(cell)
-    FUN14 = dot(u_s('+'), nn('+')) * q_c('-') * dS0
+    FUN14 = ic_c * q_c * dx(cell)
 
     # stress balance - inner
     FUN15 = inner(avg(eta_3), lam_3('+') - J_c('-') * p_c('-') * dot(H_c('-'), nn('-'))) * dS0
